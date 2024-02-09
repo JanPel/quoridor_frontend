@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 use web_sys::{DedicatedWorkerGlobalScope, MessageEvent, Worker, WorkerOptions, WorkerType};
 
+use quoridor::{AIControlledBoard, PreCalc};
+
 struct QuoridorWorker<'a> {
     worker: &'a mut Worker,
 }
@@ -99,8 +101,8 @@ impl CommandChannel {
 // Here we will put the actual worker code. This will be running the monte carlo simulations in the background.
 async fn internal_worker(user_commands: CommandChannel, calc_update_channel: WorkerUpdates) {
     let mut i = 0;
+    let mut ai_controlled_board = AIControlledBoard::decode("0;10E1;10E9").unwrap();
     loop {
-        TimeoutFuture::new(1000).await;
         if let Some(next_command) = user_commands.recv_next() {
             log::info!("Message from main thread: {:?}", next_command);
             match next_command {
@@ -114,6 +116,8 @@ async fn internal_worker(user_commands: CommandChannel, calc_update_channel: Wor
                 }
             }
         }
+        let resp = ai_controlled_board.ai_move(1000, &PreCalc::new());
+        log::info!("AI Move: {:?}", resp);
 
         calc_update_channel.send_update(CalculateUpdate::Progress(i as f32 / 100.0));
         i += 1;

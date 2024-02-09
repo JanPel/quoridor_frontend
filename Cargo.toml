@@ -6,13 +6,19 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-dioxus = { path = "../../dioxus/packages/dioxus" }
-dioxus-web = { path = "../../dioxus/packages/web" }
-gloo-worker = "0.2.1"
+dioxus = "0.4.0"
+dioxus-web = "0.4.0"
+gloo= {version ="0.11", features = ["worker", "futures"]}
 js-sys = { version = "0.3.64" }
 log = "0.4.19"
 wasm-bindgen = "0.2.87"
+wasm-bindgen-futures = "0.4"
 wasm-logger = "0.2.0"
+futures = "0.3"
+serde = {version = "1", features = ["derive"]}
+bincode = {version = "1"}
+quoridor= {path = "../quoridor_lib" } 
+
 
 [dependencies.web-sys]
 version = "0.3.4"
