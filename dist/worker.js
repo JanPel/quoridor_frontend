@@ -1,5 +1,5 @@
-import init from "/./assets/dioxus/dioxus.js";
+import init from "/./assets/dioxus/name.js";
 
-init("/./assets/dioxus/dioxus_bg.wasm").then(wasm => {
+init("/./assets/dioxus/name_bg.wasm").then(wasm => {
   wasm.start_webworker();
 });
