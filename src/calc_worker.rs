@@ -10,9 +10,9 @@ use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 use web_sys::{DedicatedWorkerGlobalScope, MessageEvent, Worker, WorkerOptions, WorkerType};
 
-use quoridor::{AIControlledBoard, PreCalc};
+use quoridor::{AIControlledBoard, Move, PreCalc};
 
-struct QuoridorWorker<'a> {
+pub struct QuoridorWorker<'a> {
     worker: &'a mut Worker,
 }
 
@@ -21,6 +21,7 @@ impl<'a> QuoridorWorker<'a> {
         let encoded = bincode::serialize(&command).unwrap();
         let uint8_array = js_sys::Uint8Array::new_with_length(encoded.len() as u32);
         uint8_array.copy_from(&encoded);
+        log::info!("Sending command to worker: {:?}", command);
         self.worker.post_message(&JsValue::from(uint8_array));
     }
 }
@@ -35,12 +36,10 @@ pub fn use_webworker(cx: &ScopeState) -> (QuoridorWorker, &UseState<CalculateUpd
         let f: Closure<dyn Fn(MessageEvent) -> ()> = Closure::new(move |event: MessageEvent| {
             let data = event.data();
             let uint8_array: Uint8Array = data.into();
-            log::info!("Message from main thread: {:?}", event.data());
             // Create a Vec<u8> with the same length as the Uint8Array
             let mut bytes = vec![0; uint8_array.length() as usize];
-            log::info!("Bytes {:?}", bytes);
-            // Copy the contents of the Uint8Array into the Vec<u8>
             uint8_array.copy_to(&mut bytes);
+            // Copy the contents of the Uint8Array into the Vec<u8>
             let calculate_update: CalculateUpdate = bincode::deserialize(&bytes).unwrap();
 
             latest_update.set(calculate_update);
@@ -65,7 +64,7 @@ fn worker_options() -> WorkerOptions {
 #[derive(Deserialize, Serialize, Debug)]
 pub enum UserCommand {
     DecodeBoard,
-    GameMove,
+    GameMove(Move),
 }
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -103,6 +102,7 @@ async fn internal_worker(user_commands: CommandChannel, calc_update_channel: Wor
     let mut i = 0;
     let mut ai_controlled_board = AIControlledBoard::decode("0;10E1;10E9").unwrap();
     loop {
+        TimeoutFuture::new(10).await;
         if let Some(next_command) = user_commands.recv_next() {
             log::info!("Message from main thread: {:?}", next_command);
             match next_command {
@@ -110,13 +110,14 @@ async fn internal_worker(user_commands: CommandChannel, calc_update_channel: Wor
                     log::info!("Decoding board");
                     // decode the board
                 }
-                UserCommand::GameMove => {
-                    log::info!("Game Move");
+                UserCommand::GameMove(game_move) => {
+                    log::info!("Game Move {:?}", game_move);
+                    ai_controlled_board.game_move(game_move);
                     // make a game move
                 }
             }
         }
-        let resp = ai_controlled_board.ai_move(1000, &PreCalc::new());
+        let resp = ai_controlled_board.ai_move(10_000, &PreCalc::new());
         log::info!("AI Move: {:?}", resp);
 
         calc_update_channel.send_update(CalculateUpdate::Progress(i as f32 / 100.0));
@@ -137,22 +138,22 @@ pub async fn start_webworker() {
     let scope = DedicatedWorkerGlobalScope::unchecked_from_js_ref(js_value);
     // let scope = WorkerGlobalScope::unchecked_from_js_ref(js_value);
 
-    let _scope = scope.clone();
-
     let message_received = std::sync::Arc::new(std::sync::Mutex::new(VecDeque::new()));
     let local_queu = message_received.clone();
 
     // Here we put messages send to the worker on the internal queu
     let f: Closure<dyn Fn(MessageEvent) -> ()> = Closure::new(move |event: MessageEvent| {
+        log::info!("closure called");
         let data = event.data();
+        log::info!("Message from main thread: {:?}", &data);
         let uint8_array: Uint8Array = data.into();
-        log::info!("Message from main thread: {:?}", event.data());
-        log::info!("Message from main 2 thread: {:?}", event.data());
         // Create a Vec<u8> with the same length as the Uint8Array
         let mut bytes = vec![0; uint8_array.length() as usize];
+        log::info!("Message from main thread: {:?}", &bytes);
         // Copy the contents of the Uint8Array into the Vec<u8>
         uint8_array.copy_to(&mut bytes);
         let user_command: UserCommand = bincode::deserialize(&bytes).unwrap();
+        log::info!("Message from main thread: {:?}", user_command);
         local_queu.lock().unwrap().push_back(user_command);
     });
     let val = f.into_js_value();
