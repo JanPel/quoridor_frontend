@@ -18,6 +18,7 @@ futures = "0.3"
 serde = {version = "1", features = ["derive"]}
 bincode = {version = "1"}
 quoridor= {path = "../quoridor_lib" } 
+reqwest = {version ="0.11", features =["json"]}
 
 
 [dependencies.web-sys]

@@ -1,3 +1,4 @@
+mod board_fr;
 mod calc_worker;
 
 use std::collections::VecDeque;
@@ -13,6 +14,7 @@ use web_sys::{
     DedicatedWorkerGlobalScope, MessageEvent, Worker, WorkerGlobalScope, WorkerOptions, WorkerType,
 };
 
+use board_fr::QuoridorBoard;
 pub use calc_worker::start_webworker;
 use calc_worker::*;
 use quoridor::{Move, PawnMove};
@@ -24,31 +26,10 @@ fn main() {
 }
 
 fn app(cx: Scope) -> Element {
-    let (worker, msgs) = use_webworker(cx);
-    let message = use_state(cx, || "".to_string());
-
-    let latest_update = format!("{:?}", msgs.get());
     render! {
-        div {
-            button {
-                onclick: move |_| {
-                    let msg = format!("Message from main: {}", message.get());
-
-                    worker.send_command(UserCommand::GameMove(Move::PawnMove(PawnMove::Up, None)));
-                },
-                "Send a message to the worker"
-            }
-            input {
-                value: "{message}",
-                oninput: move |event| {
-                    message.set(event.value.clone());
-                }
-            }
-        }
-        div {
+        rsx! {
             div {
-                "{latest_update}"
-            }
-        }
+       QuoridorBoard  {}
+            }}
     }
 }
