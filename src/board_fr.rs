@@ -169,8 +169,12 @@ pub fn QuoridorBoard(cx: Scope) -> Element {
     let hover_state: &UseState<Option<HoverState>> = use_state(&cx, || None);
     let ai_suggest_move: &UseState<Option<(Move, (usize, usize))>> = use_state(&cx, || None);
     let board_flipped = use_state(&cx, || false);
-    let ai_player = 0;
-    let (worker, calc_update, board) = use_webworker(cx,ai_player);
+
+    let (worker, calc_update, board, ai_player) = use_webworker(cx);
+    let progress = match &calc_update.get() {
+        CalculateUpdate::Progress(progress) => *progress,
+        CalculateUpdate::Finish(_) => 0.0,
+    };
 
 
 
@@ -182,7 +186,8 @@ pub fn QuoridorBoard(cx: Scope) -> Element {
 
 
 
-    let players_turn = board.read().turn % 2 != ai_player;
+    let current_ai_player = *ai_player.get();
+    let players_turn = current_ai_player.is_some() && board.read().turn % 2 != current_ai_player.unwrap();
     cx.render(rsx! {
         div { class: "flex",
             div {
@@ -336,6 +341,43 @@ pub fn QuoridorBoard(cx: Scope) -> Element {
                     }
                 })
             }
-    }
+        }
+        button {
+            class: "bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded",
+            onclick: move |_| {
+                board_flipped.with_mut(|board| {
+                    *board = !*board;
+                });
+            },
+            "FLIP BOARD"
+        }
+        button {
+            class: "bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded",
+            onclick: move |_| {
+                ai_player.with_mut(|ai_pawn| {
+                    *ai_pawn = Some(0);
+                });
+                worker.send_command(UserCommand::SetAIPlayer(0));
+            },
+            "PLAY BLACK"
+        }
+        button {
+            class: "bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded",
+            onclick: move |_| {
+                ai_player.with_mut(|ai_pawn| {
+                    *ai_pawn = Some(1);
+                });
+                worker.send_command(UserCommand::SetAIPlayer(1));
+            },
+            "PLAY WHITE"
+        }
+        div {
+            class: "bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded w-18",
+                "{progress}%"
+        }
+        
+
+
+        
     })
 }

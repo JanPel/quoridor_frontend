@@ -14,8 +14,6 @@ use web_sys::{DedicatedWorkerGlobalScope, MessageEvent, Worker, WorkerOptions, W
 
 use quoridor::{AIControlledBoard, Board, MonteCarloTree, Move, PreCalc};
 
-static AI_PLAYER: AtomicUsize = AtomicUsize::new(1);
-
 #[derive(Clone, Copy)]
 pub struct QuoridorWorker<'a> {
     worker: &'a Worker,
@@ -33,10 +31,15 @@ impl<'a> QuoridorWorker<'a> {
 
 pub fn use_webworker(
     cx: &ScopeState,
-    ai_player: usize,
-) -> (QuoridorWorker, &UseState<CalculateUpdate>, &UseRef<Board>) {
+) -> (
+    QuoridorWorker,
+    &UseState<CalculateUpdate>,
+    &UseRef<Board>,
+    &UseState<Option<usize>>,
+) {
     let latest_update = use_state(cx, || CalculateUpdate::Progress(0.0));
     let board = use_ref(cx, || Board::new());
+    let ai_player: &UseState<Option<usize>> = use_state(cx, || None);
 
     let worker = cx.use_hook(|| {
         let worker = Worker::new_with_options("worker.js", &worker_options()).unwrap();
@@ -56,10 +59,8 @@ pub fn use_webworker(
                 CalculateUpdate::Finish(game_move) => {
                     //log::info!("AI finish move suggested : {:?}", game_move);
                     board.with_mut(|board| {
-                        if board.turn % 2 == ai_player {
-                            let res = board.game_move(game_move);
-                            info!("Taking AI MOVE AUTOMATICALLY: {:?}", res);
-                        }
+                        let res = board.game_move(game_move);
+                        info!("Taking AI MOVE AUTOMATICALLY: {:?}", res);
                     });
                 }
                 CalculateUpdate::Progress(f) => {
@@ -72,13 +73,10 @@ pub fn use_webworker(
         let val = f.into_js_value();
         let f = js_sys::Function::unchecked_from_js(val);
         worker.set_onmessage(Some(&f));
-
-        let quoridor_worker = QuoridorWorker { worker: &worker };
-        quoridor_worker.send_command(UserCommand::SetAIPlayer(ai_player));
         worker
     });
 
-    (QuoridorWorker { worker }, latest_update, board)
+    (QuoridorWorker { worker }, latest_update, board, ai_player)
 }
 
 fn worker_options() -> WorkerOptions {
@@ -128,7 +126,7 @@ async fn try_downloading_pre_calc(
     board: &Board,
 ) -> Result<MonteCarloTree, Box<dyn std::error::Error + Sync + Send>> {
     let resp = reqwest::get(format!(
-        "http://localhost:8080/pre_calc_old/precalc/{}.mc_node",
+        "http://localhost:8080/precalc_remote/precalc/{}.mc_node",
         board.encode()
     ))
     .await?;
@@ -142,7 +140,7 @@ async fn try_downloading_pre_calc(
 
 async fn get_board_scores() -> Result<PreCalc, Box<dyn std::error::Error + Sync + Send>> {
     Ok(
-        reqwest::get("http://localhost:8080/pre_calc_old/to_precalc.json")
+        reqwest::get("http://localhost:8080/precalc_remote/to_precalc.json")
             .await?
             .json()
             .await?,
@@ -158,6 +156,10 @@ async fn internal_worker(user_commands: CommandChannel, calc_update_channel: Wor
             PreCalc::new()
         }
     };
+    if let Ok(rel_tree) = try_downloading_pre_calc(&ai_controlled_board.board).await {
+        ai_controlled_board.relevant_mc_tree = rel_tree;
+    }
+    let mut ai_player = None;
     loop {
         TimeoutFuture::new(10).await;
         if let Some(next_command) = user_commands.recv_next() {
@@ -182,7 +184,7 @@ async fn internal_worker(user_commands: CommandChannel, calc_update_channel: Wor
                 }
                 UserCommand::SetAIPlayer(player) => {
                     log::info!("Setting AI Player to {}", player);
-                    AI_PLAYER.store(player, std::sync::atomic::Ordering::Release);
+                    ai_player = Some(player);
                 }
             }
         }
@@ -191,22 +193,28 @@ async fn internal_worker(user_commands: CommandChannel, calc_update_channel: Wor
 
         let number_visits = ai_controlled_board.relevant_mc_tree.mc_node.number_visits();
         log::info!("Number of visits: {:?}", number_visits);
-        if number_visits > 100_000 {
-            log::info!(
-                "{}, {}",
-                ai_controlled_board.board.turn % 2,
-                AI_PLAYER.load(std::sync::atomic::Ordering::Acquire)
-            );
-            if ai_controlled_board.board.turn % 2
-                == AI_PLAYER.load(std::sync::atomic::Ordering::Acquire)
-            {
+        if number_visits > 600_000 || ai_controlled_board.is_played_out() {
+            log::info!("{}, {:?}", ai_controlled_board.board.turn % 2, ai_player);
+            if ai_player == Some(ai_controlled_board.board.turn % 2) {
                 log::info!("AI TOOK MOVE IN WORKER Move: {:?}", resp.0);
                 ai_controlled_board.game_move(resp.0);
+                match try_downloading_pre_calc(&ai_controlled_board.board).await {
+                    Ok(mc_tree) => {
+                        ai_controlled_board.relevant_mc_tree = mc_tree;
+                    }
+                    Err(err) => {
+                        log::warn!("{}", err);
+                    }
+                }
                 calc_update_channel.send_update(CalculateUpdate::Finish(resp.0));
+            }
+            if ai_controlled_board.is_played_out() {
+                log::info!("Game is played out");
+                TimeoutFuture::new(100).await;
             }
         } else {
             calc_update_channel
-                .send_update(CalculateUpdate::Progress(number_visits as f32 / 100_000.0));
+                .send_update(CalculateUpdate::Progress(number_visits as f32 / 600_000.0));
         }
     }
 }
