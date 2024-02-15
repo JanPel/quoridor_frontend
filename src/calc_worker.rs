@@ -14,7 +14,7 @@ use web_sys::{DedicatedWorkerGlobalScope, MessageEvent, Worker, WorkerOptions, W
 
 use quoridor::{AIControlledBoard, Board, MonteCarloTree, Move, PreCalc};
 
-const BASE_URL: &str = "http://localhost:8080/";
+const BASE_URL: &str = "https://janpel.github.io/quoridor_frontend/";
 
 #[derive(Clone, Copy)]
 pub struct QuoridorWorker<'a> {
