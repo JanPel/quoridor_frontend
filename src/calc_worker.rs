@@ -14,6 +14,8 @@ use web_sys::{DedicatedWorkerGlobalScope, MessageEvent, Worker, WorkerOptions, W
 
 use quoridor::{AIControlledBoard, Board, MonteCarloTree, Move, PreCalc};
 
+const BASE_URL: &str = "http://localhost:8080/";
+
 #[derive(Clone, Copy)]
 pub struct QuoridorWorker<'a> {
     worker: &'a Worker,
@@ -126,7 +128,8 @@ async fn try_downloading_pre_calc(
     board: &Board,
 ) -> Result<MonteCarloTree, Box<dyn std::error::Error + Sync + Send>> {
     let resp = reqwest::get(format!(
-        "http://localhost:8080/precalc_remote/precalc/{}.mc_node",
+        "{}precalc/precalc/{}.mc_node",
+        BASE_URL,
         board.encode()
     ))
     .await?;
@@ -139,12 +142,10 @@ async fn try_downloading_pre_calc(
 }
 
 async fn get_board_scores() -> Result<PreCalc, Box<dyn std::error::Error + Sync + Send>> {
-    Ok(
-        reqwest::get("http://localhost:8080/precalc_remote/to_precalc.json")
-            .await?
-            .json()
-            .await?,
-    )
+    Ok(reqwest::get(format!("{}precalc/to_precalc.json", BASE_URL))
+        .await?
+        .json()
+        .await?)
 }
 // Here we will put the actual worker code. This will be running the monte carlo simulations in the background.
 async fn internal_worker(user_commands: CommandChannel, calc_update_channel: WorkerUpdates) {
@@ -160,9 +161,12 @@ async fn internal_worker(user_commands: CommandChannel, calc_update_channel: Wor
         ai_controlled_board.relevant_mc_tree = rel_tree;
     }
     let mut ai_player = None;
+
+    let mut new_command = false;
     loop {
         TimeoutFuture::new(10).await;
         if let Some(next_command) = user_commands.recv_next() {
+            new_command = true;
             log::info!("Message from main thread: {:?}", next_command);
             match next_command {
                 UserCommand::DecodeBoard => {
@@ -188,16 +192,25 @@ async fn internal_worker(user_commands: CommandChannel, calc_update_channel: Wor
                 }
             }
         }
-        let resp = ai_controlled_board.ai_move(10_000, &pre_calc);
-        //log::info!("AI Move: {:?}", resp);
 
         let number_visits = ai_controlled_board.relevant_mc_tree.mc_node.number_visits();
+        if (ai_controlled_board.is_played_out() || number_visits >= 20_000_000) && !new_command {
+            // Here we want to just wait for 100 ms and then continue, so to make it more responsive
+            TimeoutFuture::new(100).await;
+            continue;
+        }
+        let number_of_steps = if new_command { 100 } else { 10_000 };
+
+        let resp = ai_controlled_board.ai_move(number_of_steps, &pre_calc);
+        //log::info!("AI Move: {:?}", resp);
+
         log::info!("Number of visits: {:?}", number_visits);
         if number_visits > 600_000 || ai_controlled_board.is_played_out() {
             log::info!("{}, {:?}", ai_controlled_board.board.turn % 2, ai_player);
             if ai_player == Some(ai_controlled_board.board.turn % 2) {
                 log::info!("AI TOOK MOVE IN WORKER Move: {:?}", resp.0);
                 ai_controlled_board.game_move(resp.0);
+                new_command = true;
                 match try_downloading_pre_calc(&ai_controlled_board.board).await {
                     Ok(mc_tree) => {
                         ai_controlled_board.relevant_mc_tree = mc_tree;
@@ -208,11 +221,9 @@ async fn internal_worker(user_commands: CommandChannel, calc_update_channel: Wor
                 }
                 calc_update_channel.send_update(CalculateUpdate::Finish(resp.0));
             }
-            if ai_controlled_board.is_played_out() {
-                log::info!("Game is played out");
-                TimeoutFuture::new(100).await;
-            }
+            new_command = false;
         } else {
+            new_command = false;
             calc_update_channel
                 .send_update(CalculateUpdate::Progress(number_visits as f32 / 600_000.0));
         }
