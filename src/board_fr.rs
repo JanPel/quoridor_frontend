@@ -188,6 +188,7 @@ pub fn QuoridorBoard(cx: Scope) -> Element {
 
     let current_ai_player = *ai_player.get();
     let players_turn = current_ai_player.is_some() && board.read().turn % 2 != current_ai_player.unwrap();
+    let hover_square = hover_state.get().clone();
     cx.render(rsx! {
         div { class: "flex",
             div {
@@ -204,18 +205,20 @@ pub fn QuoridorBoard(cx: Scope) -> Element {
                                     (false,false) => SquareType::Corner,
                                 };
 
-                                let mut color = if col % 2 == 0 && row % 2 == 0 { "bg-grey-200" } else { "bg-blue-500" };
+                                let mut color = if col % 2 == 0 && row % 2 == 0 { "bg-amber-600" } else { "bg-amber-400" };
                                 //if board.read().board.is_wall_probable_front_end(square_type, row,col) {
                                 //        color = "bg-gray-500";
                                 //}
 
                                 if let Some(hover_state) = hover_state.get() {
-                                    if hover_state.is_hover(row, col) {
-                                        color = "bg-green-500";
+                                    if square_type != SquareType::Square {
+                                        if hover_state.is_hover(row, col) {
+                                            color = "bg-amber-700";
+                                        }
                                     }
                                 }
                                 if is_part_of_wall(&board.read(),square_type, row,col) {
-                                        color = "bg-red-500";
+                                        color = "bg-amber-800";
                                 }
                                 //if let Some((Move::Wall(dir, loc), (_, _))) = ai_suggest_move.get() {
                                 //        for wall in Walls::part_of_walls(square_type, row, col) {
@@ -263,71 +266,42 @@ pub fn QuoridorBoard(cx: Scope) -> Element {
                                         if square_type == SquareType::Square {
                                             if let Some(pawn_index) = board.read().is_pawn(row/2,col/2) {
                                                     let pawn_color = if pawn_index == 0 {
-                                                        "bg-yellow-500"
+                                                        "bg-slate-100"
                                                     } else {
-                                                        "bg-purple-500"
+                                                        "bg-slate-900"
                                                     };
                                                     rsx! {div {
                                                         class: "{square_type.width()} {square_type.height()} {pawn_color} rounded-full",
                                                     }
                                                 }
                                             } else if let Some(pawn_move) = board.read().is_possible_next_pawn_location(row/2,col/2) {
-                                                if let Some((Move::PawnMove(first_move,second_move),(move_row ,move_col))) = ai_suggest_move.get(){
-                                                    if (*move_row, *move_col) == (row/2, col/2) {
-                                    rsx! {div {
-                                                            class: "{square_type.width()} {square_type.height()} bg-red-500 rounded-full",
+                                                if let Some(hover_square) = hover_square {
+                                                    if hover_square.is_hover(row, col) {
+                                                        let hover_color = if board.read().turn % 2 == 0 {
+                                                            "bg-slate-200"
+                                                        } else {
+                                                            "bg-slate-800"
+                                                        };
+                                                        rsx! {div {
+                                                            class: "{square_type.width()} {square_type.height()} {hover_color} rounded-full",
                                                             onclick: move |_| { 
-
                                                                 if players_turn {
                                                                     board.with_mut(|board| {
-                                                                        let game_move = Move::PawnMove(*first_move, *second_move);
-                                                                        let res = board.game_move(game_move);
-                                                                        worker.send_command(UserCommand::GameMove(game_move));
-                                                                        ai_suggest_move.set(None);
-                                                                        info!("Player move result: {:?}", res);
+                                                                            let game_move = Move::PawnMove(pawn_move.0, pawn_move.1);
+                                                                            let res = board.game_move(game_move);
+                                                                            worker.send_command(UserCommand::GameMove(game_move));
+                                                                            ai_suggest_move.set(None);
+                                                                            info!("Player move result: {:?}", res);
                                                                     });
                                                                 }
                                                             },
-
-
                                                         }
-                                                    }
+                                                    } 
                                                 } else {
-                                    rsx! {div {
-                                                        class: "{square_type.width()} {square_type.height()} bg-gray-500 rounded-full",
-                                                        onclick: move |_| { 
-                                                            if players_turn {
-                                                                board.with_mut(|board| {
-                                                                        let game_move = Move::PawnMove(pawn_move.0, pawn_move.1);
-                                                                        let res = board.game_move(game_move);
-                                                                        worker.send_command(UserCommand::GameMove(game_move));
-                                                                        ai_suggest_move.set(None);
-                                                                        info!("Player move result: {:?}", res);
-                                                                });
-                                                            }
-                                                        },
-
-
-                                                    }
-                                                } 
+                                                    rsx! {div {}}
                                                 }
                                             } else {
-                                                rsx! {div {
-                                                        class: "{square_type.width()} {square_type.height()} bg-gray-500 rounded-full",
-                                                        onclick: move |_| { 
-                                                            if players_turn {
-                                                                board.with_mut(|board| {
-                                                                    let game_move = Move::PawnMove(pawn_move.0, pawn_move.1);
-                                                                    let res = board.game_move(game_move);
-                                                                    worker.send_command(UserCommand::GameMove(game_move));
-                                                                    info!("Player move result: {:?}", res);
-                                                                });
-                                                            }
-                                                        },
-
-
-                                                    }
-                                                }
+                                                rsx! {div {}}
                                             }
                                             } else {
                                                 rsx! {div {}}
