@@ -12,10 +12,10 @@ use std::sync::atomic::AtomicUsize;
 use wasm_bindgen::prelude::*;
 use web_sys::{DedicatedWorkerGlobalScope, MessageEvent, Worker, WorkerOptions, WorkerType};
 
-use quoridor::{AIControlledBoard, Board, MonteCarloTree, Move, PreCalc};
+use quoridor::{AIControlledBoard, Board, MirrorMoveType, MonteCarloTree, Move, PreCalc};
 
-//const BASE_URL: &str = "https://janpel.github.io/quoridor_frontend/";
-const BASE_URL: &str = "http://localhost:8080/";
+const BASE_URL: &str = "https://janpel.github.io/quoridor_frontend/";
+//const BASE_URL: &str = "http://localhost:8080/";
 
 #[derive(Clone, Copy)]
 pub struct QuoridorWorker<'a> {
@@ -163,6 +163,7 @@ async fn internal_worker(user_commands: CommandChannel, calc_update_channel: Wor
     }
     let mut ai_player = None;
 
+    let mut mirror_calc_board: Option<bool> = None;
     let mut new_command = false;
     loop {
         TimeoutFuture::new(10).await;
@@ -176,6 +177,29 @@ async fn internal_worker(user_commands: CommandChannel, calc_update_channel: Wor
                 }
                 UserCommand::GameMove(game_move) => {
                     log::info!("Game Move {:?}", game_move);
+                    if mirror_calc_board.is_none() {
+                        log::info!(
+                            "RECEIVED MIRRORED GAME MOVE: {:?}, MIRROR MOVE IS: {:?}, {:?}",
+                            game_move,
+                            game_move.mirror_move(),
+                            game_move.mirror_move_type()
+                        );
+                        match game_move.mirror_move_type() {
+                            MirrorMoveType::Right => {
+                                mirror_calc_board = Some(true);
+                            }
+                            MirrorMoveType::Left => {
+                                mirror_calc_board = Some(false);
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    let game_move = if mirror_calc_board == Some(true) {
+                        game_move.mirror_move()
+                    } else {
+                        game_move
+                    };
                     ai_controlled_board.game_move(game_move);
                     match try_downloading_pre_calc(&ai_controlled_board.board).await {
                         Ok(mc_tree) => {
@@ -206,7 +230,7 @@ async fn internal_worker(user_commands: CommandChannel, calc_update_channel: Wor
         //log::info!("AI Move: {:?}", resp);
 
         log::info!("Number of visits: {:?}", number_visits);
-        if number_visits > 600_000 || ai_controlled_board.is_played_out() {
+        if number_visits > 600_000 || ai_controlled_board.is_played_out() || resp.2 >= 300_000 {
             log::info!("{}, {:?}", ai_controlled_board.board.turn % 2, ai_player);
             if ai_player == Some(ai_controlled_board.board.turn % 2) {
                 log::info!("AI TOOK MOVE IN WORKER Move: {:?}", resp.0);
@@ -220,7 +244,12 @@ async fn internal_worker(user_commands: CommandChannel, calc_update_channel: Wor
                         log::warn!("{}", err);
                     }
                 }
-                calc_update_channel.send_update(CalculateUpdate::Finish(resp.0));
+                let to_send = if mirror_calc_board == Some(true) {
+                    resp.0.mirror_move()
+                } else {
+                    resp.0
+                };
+                calc_update_channel.send_update(CalculateUpdate::Finish(to_send));
             }
             new_command = false;
         } else {
