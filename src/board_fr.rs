@@ -172,7 +172,7 @@ pub fn QuoridorBoard(cx: Scope) -> Element {
 
     let (worker, calc_update, board, ai_player) = use_webworker(cx);
     let progress = match &calc_update.get() {
-        CalculateUpdate::Progress(progress) => *progress,
+        CalculateUpdate::Progress(progress) => (progress * 100.0).round() ,
         CalculateUpdate::Finish(_) => 0.0,
     };
 
@@ -190,7 +190,8 @@ pub fn QuoridorBoard(cx: Scope) -> Element {
     let players_turn = current_ai_player.is_some() && board.read().turn % 2 != current_ai_player.unwrap();
     let hover_square = hover_state.get().clone();
     cx.render(rsx! {
-        div { class: "flex",
+        div { class: "flex justify-center items-start space-x-4",
+        div { class: "flex flex-col items-center",
             div {
                 class: "board bg-gray-100 p-4 grid grid-cols-{cols}",
                 rows.clone().into_iter().map(|row| {
@@ -314,44 +315,69 @@ pub fn QuoridorBoard(cx: Scope) -> Element {
                         }
                     }
                 })
+            },
+            cx.render(rsx! {
+                div { class: "flex flex-wrap justify-center items-center space-x-2 p-4",
+                    div { class: "flex flex-col items-center p-2",
+                        div { class: "text-3xl font-bold", "TURN" },
+                        div { class: "text-4xl font-bold", "{board.read().turn + 1}" }
+                    },
+                    div { class: "flex flex-col items-center p-2",
+                        div { class: "text-3xl font-bold", "WHITE" },
+                        // Assuming pawn 0's walls are correctly retrieved with a direct method or similar access
+                        div { class: "text-4xl font-bold", "{board.read().pawns[0].number_of_walls_left}" }
+                    },
+                    div { class: "flex flex-col items-center p-2",
+                        div { class: "text-3xl font-bold", "BLACK" },
+                        // Corrected to use the specific field for pawn 1 as indicated
+                        div { class: "text-4xl font-bold", "{board.read().pawns[1].number_of_walls_left}" }
+                    }
+                }
+            }),
+        },
+        div { class: "flex flex-col space-y-2",
+            button {
+                class: "bg-amber-500 hover:bg-amber-700 text-white font-bold py-2 px-4 rounded",
+                onclick: move |_| {
+                    board_flipped.with_mut(|board| {
+                        *board = !*board;
+                    });
+                },
+                "FLIP BOARD"
+            },
+            div {
+                class: "bg-amber-500 hover:bg-amber-700 text-white font-bold py-2 px-4 rounded",
+                // Assuming 'progress' is a state or prop you're tracking
+                "{progress}%"
+            }
+            if ai_player.get().is_none() {
+                rsx!{
+                button {
+                    class: "bg-amber-500 hover:bg-amber-700 text-white font-bold py-2 px-4 rounded",
+                    onclick: move |_| {
+                        ai_player.with_mut(|ai_pawn| {
+                            *ai_pawn = Some(0);
+                        });
+                        worker.send_command(UserCommand::SetAIPlayer(0));
+                    },
+                    "PLAY BLACK"
+                },
+                button {
+                    class: "bg-amber-500 hover:bg-amber-700 text-white font-bold py-2 px-4 rounded",
+                    onclick: move |_| {
+                        ai_player.with_mut(|ai_pawn| {
+                            *ai_pawn = Some(1);
+                        });
+                        worker.send_command(UserCommand::SetAIPlayer(1));
+                    },
+                    "PLAY WHITE"
+                },
+                }
+            }  else {
+                rsx! {div{}}
             }
         }
-        button {
-            class: "bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded",
-            onclick: move |_| {
-                board_flipped.with_mut(|board| {
-                    *board = !*board;
-                });
-            },
-            "FLIP BOARD"
         }
-        button {
-            class: "bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded",
-            onclick: move |_| {
-                ai_player.with_mut(|ai_pawn| {
-                    *ai_pawn = Some(0);
-                });
-                worker.send_command(UserCommand::SetAIPlayer(0));
-            },
-            "PLAY BLACK"
-        }
-        button {
-            class: "bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded",
-            onclick: move |_| {
-                ai_player.with_mut(|ai_pawn| {
-                    *ai_pawn = Some(1);
-                });
-                worker.send_command(UserCommand::SetAIPlayer(1));
-            },
-            "PLAY WHITE"
-        }
-        div {
-            class: "bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded w-18",
-                "{progress}%"
-        }
-        
 
-
-        
     })
 }
