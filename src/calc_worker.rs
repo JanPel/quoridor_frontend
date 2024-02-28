@@ -14,8 +14,8 @@ use web_sys::{DedicatedWorkerGlobalScope, MessageEvent, Worker, WorkerOptions, W
 
 use quoridor::{AIControlledBoard, Board, MirrorMoveType, MonteCarloTree, Move, PreCalc};
 
-const BASE_URL: &str = "https://janpel.github.io/quoridor_frontend/";
-//const BASE_URL: &str = "http://localhost:8080/";
+//const BASE_URL: &str = "https://janpel.github.io/quoridor_frontend/";
+const BASE_URL: &str = "http://localhost:8080/";
 
 #[derive(Clone, Copy)]
 pub struct QuoridorWorker<'a> {
@@ -63,7 +63,7 @@ pub fn use_webworker(
                     //log::info!("AI finish move suggested : {:?}", game_move);
                     board.with_mut(|board| {
                         let res = board.game_move(game_move);
-                        info!("Taking AI MOVE AUTOMATICALLY: {:?}", res);
+                        info!("Taking AI {:?} MOVE AUTOMATICALLY: {:?}", game_move, res);
                     });
                 }
                 CalculateUpdate::Progress(f) => {
@@ -201,12 +201,52 @@ async fn internal_worker(user_commands: CommandChannel, calc_update_channel: Wor
                         game_move
                     };
                     ai_controlled_board.game_move(game_move);
-                    match try_downloading_pre_calc(&ai_controlled_board.board).await {
-                        Ok(mc_tree) => {
-                            ai_controlled_board.relevant_mc_tree = mc_tree;
-                        }
-                        Err(err) => {
-                            log::warn!("{}", err);
+                    if let Some((score_zero, pre_calc_mirrored)) =
+                        pre_calc.roll_out_score(&ai_controlled_board.board)
+                    {
+                        let to_download = if pre_calc_mirrored {
+                            Board::decode(&ai_controlled_board.board.encode_mirror()).unwrap()
+                        } else {
+                            ai_controlled_board.board.clone()
+                        };
+                        match try_downloading_pre_calc(&to_download).await {
+                            Ok(mc_tree) => {
+                                log::info!(
+                                    "Found precalc {} with {} visits, is precalc mirror {}",
+                                    to_download.encode(),
+                                    mc_tree.mc_node.number_visits(),
+                                    pre_calc_mirrored
+                                );
+                                for i in 0..10 {
+                                    log::info!("ATTENTION {}", i);
+                                }
+                                ai_controlled_board.relevant_mc_tree = mc_tree;
+                                ai_controlled_board.board = to_download;
+                                mirror_calc_board = match (mirror_calc_board, pre_calc_mirrored) {
+                                    (Some(value), true) => {
+                                        //
+                                        log::info!(
+                                            "MIRROR STATUS old value {}, new value, {}",
+                                            value,
+                                            !value
+                                        );
+                                        Some(!value)
+                                    }
+                                    (Some(value), false) => {
+                                        log::info!(
+                                            "MIRROR STATUS old value {}, new value, {}",
+                                            value,
+                                            value
+                                        );
+                                        //
+                                        Some(value)
+                                    }
+                                    (None, _) => None,
+                                };
+                            }
+                            Err(err) => {
+                                log::warn!("{}", err);
+                            }
                         }
                     }
                     // make a game move
@@ -230,26 +270,72 @@ async fn internal_worker(user_commands: CommandChannel, calc_update_channel: Wor
         //log::info!("AI Move: {:?}", resp);
 
         log::info!("Number of visits: {:?}", number_visits);
-        if number_visits > 600_000 || ai_controlled_board.is_played_out() || resp.2 >= 300_000 {
+        if number_visits > 600_000
+            || ai_controlled_board.is_played_out()
+            || resp.number_of_simulations >= 300_000
+        {
             log::info!("{}, {:?}", ai_controlled_board.board.turn % 2, ai_player);
             if ai_player == Some(ai_controlled_board.board.turn % 2) {
-                log::info!("AI TOOK MOVE IN WORKER Move: {:?}", resp.0);
-                ai_controlled_board.game_move(resp.0);
+                log::info!("AI TOOK MOVE IN WORKER Move: {:?}", resp.suggested_move);
+                ai_controlled_board.game_move(resp.suggested_move);
                 new_command = true;
-                match try_downloading_pre_calc(&ai_controlled_board.board).await {
-                    Ok(mc_tree) => {
-                        ai_controlled_board.relevant_mc_tree = mc_tree;
-                    }
-                    Err(err) => {
-                        log::warn!("{}", err);
-                    }
-                }
+
                 let to_send = if mirror_calc_board == Some(true) {
-                    resp.0.mirror_move()
+                    resp.suggested_move.mirror_move()
                 } else {
-                    resp.0
+                    resp.suggested_move
                 };
                 calc_update_channel.send_update(CalculateUpdate::Finish(to_send));
+
+                // Here we try downloading the next board
+                if let Some((score_zero, pre_calc_mirrored)) =
+                    pre_calc.roll_out_score(&ai_controlled_board.board)
+                {
+                    let to_download = if pre_calc_mirrored {
+                        Board::decode(&ai_controlled_board.board.encode_mirror()).unwrap()
+                    } else {
+                        ai_controlled_board.board.clone()
+                    };
+                    match try_downloading_pre_calc(&to_download).await {
+                        Ok(mc_tree) => {
+                            log::info!(
+                                "Found precalc for {} with {} visits, is precalc mirror {}",
+                                to_download.encode(),
+                                mc_tree.mc_node.number_visits(),
+                                pre_calc_mirrored
+                            );
+                            for i in 0..10 {
+                                log::info!("ATTENTION {}", i);
+                            }
+                            ai_controlled_board.relevant_mc_tree = mc_tree;
+                            ai_controlled_board.board = to_download;
+                            mirror_calc_board = match (mirror_calc_board, pre_calc_mirrored) {
+                                (Some(value), true) => {
+                                    //
+                                    log::info!(
+                                        "MIRROR STATUS old value {}, new value, {}",
+                                        value,
+                                        !value
+                                    );
+                                    Some(!value)
+                                }
+                                (Some(value), false) => {
+                                    log::info!(
+                                        "MIRROR STATUS old value {}, new value, {}",
+                                        value,
+                                        value
+                                    );
+                                    //
+                                    Some(value)
+                                }
+                                (None, _) => None,
+                            };
+                        }
+                        Err(err) => {
+                            log::warn!("{}", err);
+                        }
+                    }
+                }
             }
             new_command = false;
         } else {
