@@ -1,6 +1,5 @@
 use std::collections::VecDeque;
 use std::ops::Deref;
-use std::process::CommandArgs;
 use std::sync::{Arc, Mutex};
 
 use dioxus::prelude::*;
@@ -8,7 +7,6 @@ use gloo::timers::future::TimeoutFuture;
 use js_sys::Uint8Array;
 use log::info;
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::AtomicUsize;
 use wasm_bindgen::prelude::*;
 use web_sys::{DedicatedWorkerGlobalScope, MessageEvent, Worker, WorkerOptions, WorkerType};
 
@@ -163,6 +161,35 @@ async fn add_table(
     }
 }
 
+async fn store_table_if_unknown_and_ai_loses(
+    ai_controlled_board: &AIControlledBoard,
+    ai_player: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let score = ai_controlled_board.relevant_mc_tree.mc_node.scores();
+    let win_rate_prev_player = score.0 as f64 / score.1 as f64;
+    log::info!(
+        "Win for board at turn {} : {}",
+        ai_controlled_board.board.turn,
+        win_rate_prev_player
+    );
+    let win_rate_ai = if ai_player == ai_controlled_board.board.turn % 2 {
+        1.0 - win_rate_prev_player
+    } else {
+        win_rate_prev_player
+    };
+    log::info!("Win rate for ai_player {}, {}", ai_player, win_rate_ai);
+    if win_rate_ai < 0.4 && score.1 > 300_000 {
+        add_table(
+            &ai_controlled_board.board,
+            win_rate_ai,
+            score.1,
+            ai_player == 0,
+        )
+        .await?;
+    }
+    Ok(())
+}
+
 async fn try_downloading_pre_calc(
     board: &Board,
 ) -> Result<MonteCarloTree, Box<dyn std::error::Error + Sync + Send>> {
@@ -177,6 +204,53 @@ async fn try_downloading_pre_calc(
         Ok(MonteCarloTree::deserialize(&body))
     } else {
         return Err("not found")?;
+    }
+}
+
+async fn take_game_move(
+    ai_controlled_board: &mut AIControlledBoard,
+    pre_calc: &PreCalc,
+    game_move: Move,
+    ai_player: usize,
+    mirror_calc_board: &mut Option<bool>,
+) {
+    ai_controlled_board.game_move(game_move);
+    if let Some((score_zero, pre_calc_mirrored)) =
+        pre_calc.roll_out_score(&ai_controlled_board.board)
+    {
+        let to_download = if pre_calc_mirrored {
+            Board::decode(&ai_controlled_board.board.encode_mirror()).unwrap()
+        } else {
+            ai_controlled_board.board.clone()
+        };
+        match try_downloading_pre_calc(&to_download).await {
+            Ok(mc_tree) => {
+                log::info!(
+                    "Found precalc {} with {} visits, is precalc mirror {}",
+                    to_download.encode(),
+                    mc_tree.mc_node.number_visits(),
+                    pre_calc_mirrored
+                );
+                ai_controlled_board.relevant_mc_tree = mc_tree;
+                ai_controlled_board.board = to_download;
+                ai_controlled_board
+                    .relevant_mc_tree
+                    .select_best_move(&ai_controlled_board.board, &pre_calc);
+                *mirror_calc_board = match (*mirror_calc_board, pre_calc_mirrored) {
+                    (Some(value), true) => Some(!value),
+                    (Some(value), false) => Some(value),
+                    (None, _) => None,
+                };
+            }
+            Err(err) => {
+                log::warn!("{}", err);
+            }
+        }
+    } else {
+        if let Err(err) = store_table_if_unknown_and_ai_loses(ai_controlled_board, ai_player).await
+        {
+            log::warn!("{}", err);
+        }
     }
 }
 
@@ -216,12 +290,6 @@ async fn internal_worker(user_commands: CommandChannel, calc_update_channel: Wor
                 UserCommand::GameMove(game_move) => {
                     log::info!("Game Move {:?}", game_move);
                     if mirror_calc_board.is_none() {
-                        log::info!(
-                            "RECEIVED MIRRORED GAME MOVE: {:?}, MIRROR MOVE IS: {:?}, {:?}",
-                            game_move,
-                            game_move.mirror_move(),
-                            game_move.mirror_move_type()
-                        );
                         match game_move.mirror_move_type() {
                             MirrorMoveType::Right => {
                                 mirror_calc_board = Some(true);
@@ -238,58 +306,14 @@ async fn internal_worker(user_commands: CommandChannel, calc_update_channel: Wor
                     } else {
                         game_move
                     };
-                    ai_controlled_board.game_move(game_move);
-                    if let Some((score_zero, pre_calc_mirrored)) =
-                        pre_calc.roll_out_score(&ai_controlled_board.board)
-                    {
-                        let to_download = if pre_calc_mirrored {
-                            Board::decode(&ai_controlled_board.board.encode_mirror()).unwrap()
-                        } else {
-                            ai_controlled_board.board.clone()
-                        };
-                        match try_downloading_pre_calc(&to_download).await {
-                            Ok(mc_tree) => {
-                                log::info!(
-                                    "Found precalc {} with {} visits, is precalc mirror {}",
-                                    to_download.encode(),
-                                    mc_tree.mc_node.number_visits(),
-                                    pre_calc_mirrored
-                                );
-                                for i in 0..10 {
-                                    log::info!("ATTENTION {}", i);
-                                }
-                                ai_controlled_board.relevant_mc_tree = mc_tree;
-                                ai_controlled_board.board = to_download;
-                                ai_controlled_board
-                                    .relevant_mc_tree
-                                    .select_best_move(&ai_controlled_board.board, &pre_calc);
-                                mirror_calc_board = match (mirror_calc_board, pre_calc_mirrored) {
-                                    (Some(value), true) => {
-                                        //
-                                        log::info!(
-                                            "MIRROR STATUS old value {}, new value, {}",
-                                            value,
-                                            !value
-                                        );
-                                        Some(!value)
-                                    }
-                                    (Some(value), false) => {
-                                        log::info!(
-                                            "MIRROR STATUS old value {}, new value, {}",
-                                            value,
-                                            value
-                                        );
-                                        //
-                                        Some(value)
-                                    }
-                                    (None, _) => None,
-                                };
-                            }
-                            Err(err) => {
-                                log::warn!("{}", err);
-                            }
-                        }
-                    }
+                    take_game_move(
+                        &mut ai_controlled_board,
+                        &pre_calc,
+                        game_move,
+                        ai_player.unwrap(),
+                        &mut mirror_calc_board,
+                    )
+                    .await;
                     // make a game move
                 }
                 UserCommand::SetAIPlayer(player) => {
@@ -320,12 +344,6 @@ async fn internal_worker(user_commands: CommandChannel, calc_update_channel: Wor
                 log::info!("AI TOOK MOVE IN WORKER Move: {:?}", resp.suggested_move);
                 let game_move = resp.suggested_move;
                 if mirror_calc_board.is_none() {
-                    log::info!(
-                        "RECEIVED MIRRORED GAME MOVE: {:?}, MIRROR MOVE IS: {:?}, {:?}",
-                        game_move,
-                        game_move.mirror_move(),
-                        game_move.mirror_move_type()
-                    );
                     match game_move.mirror_move_type() {
                         MirrorMoveType::Right => {
                             mirror_calc_board = Some(true);
@@ -336,87 +354,20 @@ async fn internal_worker(user_commands: CommandChannel, calc_update_channel: Wor
                         _ => {}
                     }
                 }
-                ai_controlled_board.game_move(resp.suggested_move);
-                ai_controlled_board
-                    .relevant_mc_tree
-                    .select_best_move(&ai_controlled_board.board, &pre_calc);
-
-                new_command = true;
-
                 let to_send = if mirror_calc_board == Some(true) {
                     resp.suggested_move.mirror_move()
                 } else {
                     resp.suggested_move
                 };
                 calc_update_channel.send_update(CalculateUpdate::Finish(to_send));
-
-                // Here we try downloading the next board
-                if let Some((score_zero, pre_calc_mirrored)) =
-                    pre_calc.roll_out_score(&ai_controlled_board.board)
-                {
-                    let to_download = if pre_calc_mirrored {
-                        Board::decode(&ai_controlled_board.board.encode_mirror()).unwrap()
-                    } else {
-                        ai_controlled_board.board.clone()
-                    };
-
-                    match try_downloading_pre_calc(&to_download).await {
-                        Ok(mc_tree) => {
-                            log::info!(
-                                "Found precalc for {} with {} visits, is precalc mirror {}",
-                                to_download.encode(),
-                                mc_tree.mc_node.number_visits(),
-                                pre_calc_mirrored
-                            );
-                            for i in 0..10 {
-                                log::info!("ATTENTION {}", i);
-                            }
-                            ai_controlled_board.relevant_mc_tree = mc_tree;
-                            ai_controlled_board.board = to_download;
-                            ai_controlled_board
-                                .relevant_mc_tree
-                                .select_best_move(&ai_controlled_board.board, &pre_calc);
-
-                            mirror_calc_board = match (mirror_calc_board, pre_calc_mirrored) {
-                                (Some(value), true) => {
-                                    //
-                                    log::info!(
-                                        "MIRROR STATUS old value {}, new value, {}",
-                                        value,
-                                        !value
-                                    );
-                                    Some(!value)
-                                }
-                                (Some(value), false) => {
-                                    log::info!(
-                                        "MIRROR STATUS old value {}, new value, {}",
-                                        value,
-                                        value
-                                    );
-                                    //
-                                    Some(value)
-                                }
-                                (None, _) => None,
-                            };
-                        }
-                        Err(err) => {
-                            log::warn!("{}", err);
-                        }
-                    }
-                } else {
-                    let score = ai_controlled_board.relevant_mc_tree.mc_node.scores();
-                    let win_rate_ai = score.0 as f64 / score.1 as f64;
-                    if let Err(err) = add_table(
-                        &ai_controlled_board.board,
-                        win_rate_ai,
-                        score.1,
-                        ai_player == Some(0),
-                    )
-                    .await
-                    {
-                        log::warn!("{}", err);
-                    }
-                }
+                take_game_move(
+                    &mut ai_controlled_board,
+                    &pre_calc,
+                    resp.suggested_move,
+                    ai_player.unwrap(),
+                    &mut mirror_calc_board,
+                )
+                .await;
             }
             new_command = false;
         } else {
