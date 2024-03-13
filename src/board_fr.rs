@@ -187,7 +187,7 @@ pub fn QuoridorBoard(cx: Scope) -> Element {
 
 
     let current_ai_player = *ai_player.get();
-    let players_turn = current_ai_player.is_some() && board.read().turn % 2 != current_ai_player.unwrap();
+    let players_turn = current_ai_player.is_some() && board.read().board.turn % 2 != current_ai_player.unwrap();
     let hover_square = hover_state.get().clone();
     cx.render(rsx! {
         div { class: "flex justify-center items-start space-x-4",
@@ -218,7 +218,7 @@ pub fn QuoridorBoard(cx: Scope) -> Element {
                                         }
                                     }
                                 }
-                                if is_part_of_wall(&board.read(),square_type, row,col) {
+                                if is_part_of_wall(&board.read().board,square_type, row,col) {
                                         color = "bg-amber-800";
                                 }
                                 //if let Some((Move::Wall(dir, loc), (_, _))) = ai_suggest_move.get() {
@@ -265,7 +265,7 @@ pub fn QuoridorBoard(cx: Scope) -> Element {
 
                                         },
                                         if square_type == SquareType::Square {
-                                            if let Some(pawn_index) = board.read().is_pawn(row/2,col/2) {
+                                            if let Some(pawn_index) = board.read().board.is_pawn(row/2,col/2) {
                                                     let pawn_color = if pawn_index == 0 {
                                                         "bg-slate-100"
                                                     } else {
@@ -275,10 +275,10 @@ pub fn QuoridorBoard(cx: Scope) -> Element {
                                                         class: "{square_type.width()} {square_type.height()} {pawn_color} rounded-full",
                                                     }
                                                 }
-                                            } else if let Some(pawn_move) = board.read().is_possible_next_pawn_location(row/2,col/2) {
+                                            } else if let Some(pawn_move) = board.read().board.is_possible_next_pawn_location(row/2,col/2) {
                                                 if let Some(hover_square) = hover_square {
                                                     if hover_square.is_hover(row, col) {
-                                                        let hover_color = if board.read().turn % 2 == 0 {
+                                                        let hover_color = if board.read().board.turn % 2 == 0 {
                                                             "bg-slate-200"
                                                         } else {
                                                             "bg-slate-800"
@@ -320,17 +320,23 @@ pub fn QuoridorBoard(cx: Scope) -> Element {
                 div { class: "flex flex-wrap justify-center items-center space-x-2 p-4",
                     div { class: "flex flex-col items-center p-2",
                         div { class: "text-3xl font-bold", "TURN" },
-                        div { class: "text-4xl font-bold", "{board.read().turn + 1}" }
+                        div { class: "text-4xl font-bold", "{board.read().board.turn + 1}" }
                     },
                     div { class: "flex flex-col items-center p-2",
                         div { class: "text-3xl font-bold", "WHITE" },
                         // Assuming pawn 0's walls are correctly retrieved with a direct method or similar access
-                        div { class: "text-4xl font-bold", "{board.read().pawns[0].number_of_walls_left}" }
+                        div { class: "text-4xl font-bold", "{board.read().board.pawns[0].number_of_walls_left}" }
                     },
                     div { class: "flex flex-col items-center p-2",
                         div { class: "text-3xl font-bold", "BLACK" },
                         // Corrected to use the specific field for pawn 1 as indicated
-                        div { class: "text-4xl font-bold", "{board.read().pawns[1].number_of_walls_left}" }
+                        div { class: "text-4xl font-bold", "{board.read().board.pawns[1].number_of_walls_left}" }
+                    }
+                    div { class: "w-full p-4 flex flex-col items-center",
+                        div { class: "text-2xl font-semibold", "Moves History: " },
+                        div { class: "w-full max-h-[200px] overflow-auto p-2",
+                            div { class: "text-xl", "{board.read().historic_moves()}" }
+                        }
                     }
                 }
             }),

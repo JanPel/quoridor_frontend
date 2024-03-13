@@ -14,10 +14,35 @@ use quoridor::{AIControlledBoard, Board, MirrorMoveType, MonteCarloTree, Move, P
 
 //const BASE_URL: &str = "https://janpel.github.io/quoridor_frontend/";
 const BASE_URL: &str = "http://localhost:8080/";
+//const BASE_URL: &str = "https://storage.googleapis.com/quoridor_openingbook/";
 
 #[derive(Clone, Copy)]
 pub struct QuoridorWorker<'a> {
     worker: &'a Worker,
+}
+
+pub struct BoardWithHistory {
+    pub board: Board,
+    pub historic_moves: Vec<String>,
+}
+
+impl BoardWithHistory {
+    fn new() -> Self {
+        BoardWithHistory {
+            board: Board::new(),
+            historic_moves: vec![],
+        }
+    }
+
+    pub fn game_move(&mut self, game_move: Move) {
+        let quoridor_strats_move = game_move.to_quoridor_strat_notation(&self.board);
+        self.historic_moves.push(quoridor_strats_move);
+        self.board.game_move(game_move);
+    }
+
+    pub fn historic_moves(&self) -> String {
+        self.historic_moves.join(";")
+    }
 }
 
 impl<'a> QuoridorWorker<'a> {
@@ -35,11 +60,11 @@ pub fn use_webworker(
 ) -> (
     QuoridorWorker,
     &UseState<CalculateUpdate>,
-    &UseRef<Board>,
+    &UseRef<BoardWithHistory>,
     &UseState<Option<usize>>,
 ) {
     let latest_update = use_state(cx, || CalculateUpdate::Progress(0.0));
-    let board = use_ref(cx, || Board::new());
+    let board = use_ref(cx, || BoardWithHistory::new());
     let ai_player: &UseState<Option<usize>> = use_state(cx, || None);
 
     let worker = cx.use_hook(|| {
@@ -131,11 +156,23 @@ struct SeenTableNew {
     ai_player: bool,
 }
 
+pub fn quoridor_strats_moves(historic_moves: &Vec<Move>) -> Vec<String> {
+    let mut board = Board::new();
+    let mut quoridor_strats_moves = vec![];
+    for game_move in historic_moves {
+        let quoridor_strats_move = game_move.to_quoridor_strat_notation(&board);
+        quoridor_strats_moves.push(quoridor_strats_move);
+        board.game_move(*game_move);
+    }
+    quoridor_strats_moves
+}
+
 async fn add_table(
     board: &Board,
     win_rate: f64,
     visits: u32,
     ai_player_zero: bool,
+    historic_moves: Vec<Move>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let client = reqwest::Client::new();
     let url = "https://quoridorwebsite.shuttleapp.rs/seen_tables"; // Adjust the URL path as necessary
@@ -161,35 +198,41 @@ async fn add_table(
     }
 }
 
+async fn add_table_ignore_error(
+    board: Board,
+    win_rate: f64,
+    visits: u32,
+    ai_player_zero: bool,
+    historic_moves: Vec<Move>,
+) {
+    if let Err(err) = add_table(&board, win_rate, visits, ai_player_zero, historic_moves).await {
+        log::warn!("{}", err);
+    }
+}
+
 async fn store_table_if_unknown_and_ai_loses(
     ai_controlled_board: &AIControlledBoard,
     ai_player: usize,
+    historic_moves: &Vec<Move>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let score = ai_controlled_board.relevant_mc_tree.mc_node.scores();
     let win_rate_prev_player = score.0 as f64 / score.1 as f64;
-    log::info!(
-        "Win for board at turn {} : {}",
-        ai_controlled_board.board.turn,
-        win_rate_prev_player
-    );
     let win_rate_ai = if ai_player == ai_controlled_board.board.turn % 2 {
         1.0 - win_rate_prev_player
     } else {
         win_rate_prev_player
     };
-    log::info!("Win rate for ai_player {}, {}", ai_player, win_rate_ai);
     if win_rate_ai < 0.4 && score.1 > 300_000 {
-        add_table(
-            &ai_controlled_board.board,
+        wasm_bindgen_futures::spawn_local(add_table_ignore_error(
+            ai_controlled_board.board.clone(),
             win_rate_ai,
             score.1,
             ai_player == 0,
-        )
-        .await?;
+            historic_moves.clone(),
+        ));
     }
     Ok(())
 }
-
 async fn try_downloading_pre_calc(
     board: &Board,
 ) -> Result<MonteCarloTree, Box<dyn std::error::Error + Sync + Send>> {
@@ -213,6 +256,7 @@ async fn take_game_move(
     game_move: Move,
     ai_player: usize,
     mirror_calc_board: &mut Option<bool>,
+    historic_moves: &Vec<Move>,
 ) {
     ai_controlled_board.game_move(game_move);
     if let Some((score_zero, pre_calc_mirrored)) =
@@ -233,9 +277,9 @@ async fn take_game_move(
                 );
                 ai_controlled_board.relevant_mc_tree = mc_tree;
                 ai_controlled_board.board = to_download;
-                ai_controlled_board
-                    .relevant_mc_tree
-                    .select_best_move(&ai_controlled_board.board, &pre_calc);
+                //ai_controlled_board
+                //    .relevant_mc_tree
+                //    .select_best_move(&ai_controlled_board.board, &pre_calc);
                 *mirror_calc_board = match (*mirror_calc_board, pre_calc_mirrored) {
                     (Some(value), true) => Some(!value),
                     (Some(value), false) => Some(value),
@@ -247,7 +291,9 @@ async fn take_game_move(
             }
         }
     } else {
-        if let Err(err) = store_table_if_unknown_and_ai_loses(ai_controlled_board, ai_player).await
+        if let Err(err) =
+            store_table_if_unknown_and_ai_loses(ai_controlled_board, ai_player, historic_moves)
+                .await
         {
             log::warn!("{}", err);
         }
@@ -277,11 +323,12 @@ async fn internal_worker(user_commands: CommandChannel, calc_update_channel: Wor
 
     let mut mirror_calc_board: Option<bool> = None;
     let mut new_command = false;
+    let mut historic_moves = vec![];
     loop {
         TimeoutFuture::new(10).await;
         if let Some(next_command) = user_commands.recv_next() {
             new_command = true;
-            log::info!("Message from main thread: {:?}", next_command);
+            //log::info!("Message from main thread: {:?}", next_command);
             match next_command {
                 UserCommand::DecodeBoard => {
                     log::info!("Decoding board");
@@ -301,6 +348,7 @@ async fn internal_worker(user_commands: CommandChannel, calc_update_channel: Wor
                         }
                     }
 
+                    historic_moves.push(game_move);
                     let game_move = if mirror_calc_board == Some(true) {
                         game_move.mirror_move()
                     } else {
@@ -312,6 +360,7 @@ async fn internal_worker(user_commands: CommandChannel, calc_update_channel: Wor
                         game_move,
                         ai_player.unwrap(),
                         &mut mirror_calc_board,
+                        &historic_moves,
                     )
                     .await;
                     // make a game move
@@ -334,12 +383,10 @@ async fn internal_worker(user_commands: CommandChannel, calc_update_channel: Wor
         let resp = ai_controlled_board.ai_move(number_of_steps, &pre_calc);
         //log::info!("AI Move: {:?}", resp);
 
-        log::info!("Number of visits: {:?}", number_visits);
         if number_visits > 600_000
             || ai_controlled_board.is_played_out()
             || resp.number_of_simulations >= 300_000
         {
-            log::info!("{}, {:?}", ai_controlled_board.board.turn % 2, ai_player);
             if ai_player == Some(ai_controlled_board.board.turn % 2) {
                 log::info!("AI TOOK MOVE IN WORKER Move: {:?}", resp.suggested_move);
                 let game_move = resp.suggested_move;
@@ -359,6 +406,7 @@ async fn internal_worker(user_commands: CommandChannel, calc_update_channel: Wor
                 } else {
                     resp.suggested_move
                 };
+                historic_moves.push(to_send);
                 calc_update_channel.send_update(CalculateUpdate::Finish(to_send));
                 take_game_move(
                     &mut ai_controlled_board,
@@ -366,6 +414,7 @@ async fn internal_worker(user_commands: CommandChannel, calc_update_channel: Wor
                     resp.suggested_move,
                     ai_player.unwrap(),
                     &mut mirror_calc_board,
+                    &historic_moves,
                 )
                 .await;
             }
@@ -396,17 +445,13 @@ pub async fn start_webworker() {
 
     // Here we put messages send to the worker on the internal queu
     let f: Closure<dyn Fn(MessageEvent) -> ()> = Closure::new(move |event: MessageEvent| {
-        log::info!("closure called");
         let data = event.data();
-        log::info!("Message from main thread: {:?}", &data);
         let uint8_array: Uint8Array = data.into();
         // Create a Vec<u8> with the same length as the Uint8Array
         let mut bytes = vec![0; uint8_array.length() as usize];
-        log::info!("Message from main thread: {:?}", &bytes);
         // Copy the contents of the Uint8Array into the Vec<u8>
         uint8_array.copy_to(&mut bytes);
         let user_command: UserCommand = bincode::deserialize(&bytes).unwrap();
-        log::info!("Message from main thread: {:?}", user_command);
         local_queu.lock().unwrap().push_back(user_command);
     });
     let val = f.into_js_value();
